@@ -1,0 +1,2278 @@
+---
+title: "Gancz Columbia Stool Analyses Clean"
+output:
+  word_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 2
+    code_folding: hide
+date: "2025 ):"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Setup
+
+``` {r setup, include=FALSE, cache=FALSE}
+options(digits=3)
+```
+
+### Libraries
+
+```{r}
+library(tidyverse)
+library(dplyr)
+library(vegan)
+library(car)
+library(readxl)
+library(ggrepel)
+library(GGally)
+library(ggcorrplot)
+library(factoextra)
+library(Hmisc)
+library(moderndive)
+library(kableExtra)
+library(jtools)
+library(ggpubr)
+library(interactions)
+library(Maaslin2)
+
+# function for abundance figures - from MaAslin2 source code
+CLRnorm = function(features) {
+    # Convert to Matrix from Data Frame
+    features_norm = as.matrix(features)
+    dd <- colnames(features_norm)
+    
+    # CLR Normalizing the Data
+    features_CLR <- chemometrics::clr(features_norm + 1)
+    
+    # Convert back to data frame
+    features_CLR <- as.data.frame(features_CLR)
+    
+    # Rename the True Positive Features - Same Format as Before
+    colnames(features_CLR) <- dd
+    
+    
+    # Return
+    return(features_CLR)
+}
+
+```
+
+### Data Import
+
+#### metadata
+
+```{r}
+##DEMOGRAPHICS##
+
+metadata <- read.csv("221105.Callaghan.mapping_edited.csv")
+
+##CBCL##
+
+metadata2 <- read.csv("scored (1).CSV") %>%
+  select(c('id', 'sc3name', 'sc3raw', 'sc9name', 
+           'sc9raw', 'sc11name', 'sc11raw'))
+colnames(metadata2) <- c('id','sc3name','cbcl_somatic',
+                         'sc9name','cbcl_internalizing','sc11name',
+                         'cbcl_total')
+metadata2$id <- str_replace(metadata2$id,'_','.')
+metadata2$id <-
+  metadata$SampleID[match(metadata2$id,metadata$StudyID)]
+metadata2 <- metadata2 %>% select(-c('sc3name','sc9name','sc11name'))
+colnames(metadata2)[1] <- 'SampleID'
+metadata2 <- metadata2 %>% mutate_at(c(2:4),as.numeric)
+metadata2$country_of_origin <- NA
+
+metadata3 <- read_xlsx("Selfreport_questionnaires_database.xlsx",sheet="ChildBehav") %>%
+  select(c('ID_NUMB','CBCL_SOMPROB_TOT','CBCL_INTERNPROB_TOT','CBCL_TOTPROB_TOT'))
+colnames(metadata3) <- c('SampleID','cbcl_somatic','cbcl_internalizing','cbcl_total')
+metadata3 <- metadata3 %>% mutate_at(c(2:4),as.numeric)
+metadata3$country_of_origin <- NA
+
+metadata4 <- read.csv("../../Master_data/masters/ELFK_Master_Data (3).csv") %>%
+  select(c('IDENT_SUBID','CBCL_4_SOMCOMPL_TOT','CBCL_4_INTERNPROB_TOT','CBCL_4_TOTPROB_TOT', 'IAI_1A_COUNTRYADOPT'))
+colnames(metadata4) <- c('SampleID','cbcl_somatic','cbcl_internalizing','cbcl_total',
+                         'country_of_origin')
+metadata4 <- metadata4 %>% mutate_at(c(2:4),as.numeric)
+
+cbcl_data <- rbind(metadata2,metadata3,metadata4)
+
+metadata <- 
+  merge(metadata, cbcl_data, all.x=TRUE,by='SampleID')
+metadata[metadata==9999] <- NA
+
+
+
+##DIET##
+
+us_raw <- read_xlsx("Food_diary_complete_4.11.19_formaster.xlsx")
+
+# adjusting headers
+colnames(us_raw) <- c(colnames(us_raw[c(1:7)]),us_raw[1,c(8:ncol(us_raw))])
+us_raw <- us_raw[-1,]
+
+# removing duplicate entry for EL093 & EL051
+us_raw <- us_raw[-which(us_raw$SUBID=='EL093'&us_raw$Stool_Date==42701),]
+us_raw <- us_raw[-which(us_raw$SUBID=='EL051'&us_raw$Stool_Date==42757),]
+
+# calculating nutrient/calorie
+us_raw <- us_raw %>%
+  mutate(SUM_Cal = as.numeric(SUM_Cal), #convert to numeric
+                          SUM_Protein = as.numeric(SUM_Protein),
+                          SUM_Fiber = as.numeric(SUM_Fiber),
+                          SUM_Sugar = as.numeric(SUM_Sugar),
+                          SUM_CarbTotal = as.numeric(SUM_CarbTotal),
+                          SUM_FatTotal = as.numeric(SUM_FatTotal),
+                          SUM_FatPoly = as.numeric(SUM_FatPoly),
+                          SUM_FatMono = as.numeric(SUM_FatMono),
+                          SUM_FatSatur = as.numeric(SUM_FatSatur)) %>%
+  mutate(protein_per_cal=SUM_Protein/SUM_Cal, #nutrient per calorie
+                          fiber_per_cal=SUM_Fiber/SUM_Cal,
+                          sugar_per_cal=SUM_Sugar/SUM_Cal,
+                          carb_per_cal=SUM_CarbTotal/SUM_Cal,
+                          fat_per_cal=SUM_FatTotal/SUM_Cal, 
+                          fatpoly_per_cal = SUM_FatPoly/SUM_Cal,
+                          fatmono_per_cal = SUM_FatMono/SUM_Cal,
+         daysbetween_diet_stool = as.numeric(daysbetween_diet_stool),
+         protein_per_cal = SUM_Protein/SUM_Cal,
+                          fatsatur_per_cal = SUM_FatSatur/SUM_Cal)
+
+# select subsection of dataset needed for analyses
+us_food_diary <- us_raw %>% select('SUBID', 'Normal Diet?','protein_per_cal',
+                                       'fiber_per_cal', 'sugar_per_cal',
+                                       'carb_per_cal', 'fat_per_cal',
+                                       'fatpoly_per_cal', 'fatmono_per_cal',
+                                       'fatsatur_per_cal','protein_per_cal',
+                                   'SUM_Cal','daysbetween_diet_stool')
+
+# handle NAs
+us_food_diary$SUM_Cal <- ifelse(us_food_diary$SUM_Cal==0, NA,
+                                  us_food_diary$SUM_Cal)
+
+
+metadata <- merge(metadata, us_food_diary, all.x=TRUE, by.x='SampleID', by.y='SUBID')
+
+# Race & Ethnicity
+elpf_ethnicity <- read_xlsx("Selfreport_questionnaires_database.xlsx",
+                            sheet="Demographics") %>% select(
+                              c("ID_NUMB","CHILD_RACE")) %>%
+  dplyr::rename('race'="CHILD_RACE",
+                'SampleID'="ID_NUMB")
+elpf_income <- read_xlsx("Selfreport_questionnaires_database.xlsx",
+                         sheet="OC&IND") %>% select(
+                           c("ID_NUMB","P1_ED_LEVEL")) %>%
+  dplyr::rename('SampleID'="ID_NUMB")
+elpf_demo <- merge(elpf_ethnicity,
+                              elpf_income,all=TRUE,by='SampleID')
+elfk_demo <- read_csv("ELFK_behavioral_master.csv") %>%
+  select(c("SUBID","race","P1_ED_LEVEL"))  %>% 
+  dplyr::rename("SampleID"="SUBID")
+demo <- rbind(elpf_demo,elfk_demo)
+metadata <- merge(metadata,demo,by='SampleID',all.x=TRUE)
+```
+
+#### alpha diversity
+
+```{r}
+faith_pd <- read_tsv("qiime-diversity-results/faith_pd_vector/data/alpha-diversity.tsv")
+observed_features <- 
+  read_tsv("qiime-diversity-results/observed_features_vector/data/alpha-diversity.tsv")
+pielou_evenness <- read_tsv("qiime-diversity-results/evenness_vector/data/alpha-diversity.tsv")
+shannon_entropy <- read_tsv("qiime-diversity-results/shannon_vector/data/alpha-diversity.tsv")
+
+colnames(metadata)[1] <- 'SampleID'
+
+stool <- merge(metadata,faith_pd,by.x='SampleID',by.y='#SampleID',all=T) %>%
+  merge(.,observed_features,by.x='SampleID',by.y='...1',all=T) %>%
+  merge(.,pielou_evenness,by.x='SampleID',by.y='...1',all=T) %>%
+  merge(.,shannon_entropy,by.x='SampleID',by.y='...1',all=T)
+```
+
+#### Factors & Variables
+
+```{r}
+#Factor Levels
+stool$Adversity <- as.factor(stool$grouping_level1)
+stool$Adversity <- relevel(stool$Adversity,ref='Comparison')
+stool$Adversity_rlvl <- relevel(stool$Adversity,ref='Adversity')
+
+#Manual edit EL045 Age
+stool$Age[which(stool$SampleID=='EL045')] <- 11
+
+#Quadratic Age
+stool$Age2 <- stool$Age^2
+
+
+# manual edit for ELPF intrnational
+stool$country_of_origin[stool$SampleID=='ELPF073'] <- 'China'
+stool$country_of_origin[stool$SampleID=='ELPF048'] <- 'India'
+  
+
+#Country Variable & Study Variable
+stool$Country <- ifelse(stool$study=='japan','Japan','US')
+colnames(stool)[which(colnames(stool)=='study')] <- 'Study'
+stool$Study <- ifelse(stool$Study=='japan','Japan',stool$Study)
+stool$international <- ifelse(stool$country_of_origin=='United States'|
+                                is.na(stool$country_of_origin),0,1)
+
+
+## get age bounds for bounded subsample
+min_age <- min(stool$Age[stool$Country=='US']) #youngest US participant
+max_age <- max(stool$Age[stool$Country=='Japan']) #oldest Japan participant
+
+# Race/ethnicity
+stool$race <- stool$race %>% dplyr::recode(
+  `1` = 'African American/Black',
+  `2` = 'American Indian or Alaska native',
+  `3` = 'Asian-American',
+  `4` = 'Hispanic',
+  `5` = 'Native hawaiian or other Pacific Islander',
+  `6` = 'White (Non-Hispanic)',
+  `7` = 'Other'
+)
+stool$race[stool$race=='N/A'] <- NA
+stool$race[grep(',',stool$race)] <- 'Other' #deal with multiracial
+
+# Caregiver Education
+stool$P1_ED_LEVEL <- ifelse(
+  stool$P1_ED_LEVEL<2,'Less than High School',
+  ifelse(stool$P1_ED_LEVEL==2,'High School/Equivalent',
+  ifelse(stool$P1_ED_LEVEL<5,'Vocational/Technical/Some College',
+         ifelse(stool$P1_ED_LEVEL==5,"Bachelor's",
+                "Graduate"))))
+
+```
+
+#### beta diversity
+
+```{r}
+
+bray_curtis <- 
+  read_tsv("qiime-diversity-results/bray_curtis_distance_matrix/data/distance-matrix.tsv") %>%
+  .[,2:ncol(.)]
+rownames(bray_curtis) <- colnames(bray_curtis)
+
+bray_curtis <- 
+  bray_curtis[rownames(bray_curtis)%in%stool$SampleID[stool$Country=='US'],
+              colnames(bray_curtis)%in%stool$SampleID[stool$Country=='US']]
+rownames(bray_curtis) <- colnames(bray_curtis)
+
+
+jaccard <- read_tsv("qiime-diversity-results/jaccard_distance_matrix/data/distance-matrix.tsv") %>%
+  .[,2:ncol(.)]
+rownames(jaccard) <- colnames(jaccard)
+
+jaccard <- 
+  jaccard[rownames(jaccard)%in%stool$SampleID[stool$Country=='US'],
+              colnames(jaccard)%in%stool$SampleID[stool$Country=='US']]
+rownames(jaccard) <- colnames(jaccard)
+
+unweighted_uf <- 
+  read_tsv("qiime-diversity-results/unweighted_unifrac_distance_matrix/data/distance-matrix.tsv") %>%
+  .[,2:ncol(.)]
+rownames(unweighted_uf) <- colnames(unweighted_uf)
+
+
+unweighted_uf <- 
+  unweighted_uf[rownames(unweighted_uf)%in%stool$SampleID[stool$Country=='US'],
+              colnames(unweighted_uf)%in%stool$SampleID[stool$Country=='US']]
+rownames(unweighted_uf) <- colnames(unweighted_uf)
+
+
+weighted_uf <- 
+  read_tsv("qiime-diversity-results/weighted_unifrac_distance_matrix/data/distance-matrix.tsv") %>%
+  .[,2:ncol(.)]
+rownames(weighted_uf) <- colnames(weighted_uf)
+
+
+weighted_uf <- 
+  weighted_uf[rownames(weighted_uf)%in%stool$SampleID[stool$Country=='US'],
+              colnames(weighted_uf)%in%stool$SampleID[stool$Country=='US']]
+rownames(weighted_uf) <- colnames(weighted_uf)
+
+```
+
+#### Taxonomy
+
+```{r}
+#these were exported from qiime as tsvs then manually converted to csv in excel
+
+genus_taxonomy <- read.csv("genus-table.csv")
+rownames(genus_taxonomy) <- genus_taxonomy$SampleID
+genus_taxonomy <- genus_taxonomy[,-1]
+
+#interaction columns (for maaslin)
+stool$adversity_age <- ifelse(stool$Adversity=='Comparison',0,1)*stool$Age
+stool$adversity_age2 <- ifelse(stool$Adversity=='Comparison',0,1)*stool$Age2
+
+# picrust
+picrust_raw <- read_tsv("picrust2_out_pipeline_us_only/pathway_abundance_exported/feature-table.biom_edited.txt",col_names = TRUE)
+picrust = data.frame(t(picrust_raw[,-1])) # remove 1st column and transpose
+colnames(picrust) <- data.frame(picrust_raw)[,1]  # use 1st column from loaded data as column
+
+# filter the taxonomy file for min prevalence/abundance
+picrust_filter <- picrust[, 
+               colSums(picrust>1)>0.2*nrow(picrust),drop=FALSE]
+
+# center log ratio transform
+picrust_clr <- CLRnorm(picrust_filter)
+
+hypothesized_pathways <- read_csv("../../../../Mind_Brain_Body/Scripts/Analysis/Fran_Naomi_W1_Gut/SCFAs-and-AAAs_edited.csv")
+
+# select hypothesized pathways from the clr normed picrust data
+picrust_hypothesized <- picrust_clr[,which(colnames(picrust_clr) %in% 
+                                                gsub(" ","",unlist(hypothesized_pathways)))]
+```
+
+#### subsamples
+
+```{r}
+stool <- stool[stool$Country=='US',]
+
+stool_maaslin <- stool
+rownames(stool_maaslin) <- stool_maaslin$SampleID
+
+stool_bc <- stool[stool$SampleID%in%rownames(bray_curtis),]
+
+
+#### Age 
+stool$age_dummy <- factor(ifelse(stool$Age<6,'1-6 Years',
+                             ifelse(stool$Age>=12,'12.01-18 Years',
+                                    '6.01-12 Years')),levels=c('1-6 Years',
+                                                            '6.01-12 Years',
+                                                            '12.01-18 Years'))
+
+stool_bc$age_dummy <- factor(ifelse(stool_bc$Age<6,'1-6 Years',
+                             ifelse(stool_bc$Age>=12,'12.01-18 Years',
+                                    '6.01-12 Years')),levels=c('1-6 Years',
+                                                            '6.01-12 Years',
+                                                            '12.01-18 Years'))
+
+
+#### PCOAs 
+# for plots
+# (note: edited these in excel for readibility)
+bc_pcoa <- read.csv("qiime-diversity-results-us-only/bc_pcoa.csv")
+bc_pcoa <- merge(bc_pcoa,stool, by.x=colnames(bc_pcoa)[1],by.y='SampleID')
+
+jaccard_pcoa <- read.csv("qiime-diversity-results-us-only/jaccard_pcoa.csv")
+jaccard_pcoa <- merge(jaccard_pcoa,stool, by.x=colnames(jaccard_pcoa)[1],by.y='SampleID')
+
+uwuf_pcoa <- read.csv("qiime-diversity-results-us-only/uwuf_pcoa.csv")
+uwuf_pcoa <- merge(uwuf_pcoa,stool, by.x=colnames(uwuf_pcoa)[1],by.y='SampleID')
+
+wuf_pcoa <- read.csv("qiime-diversity-results-us-only/wuf_pcoa.csv")
+wuf_pcoa <- merge(wuf_pcoa,stool, by.x=colnames(wuf_pcoa)[1],by.y='SampleID')
+```
+
+
+#### Exclude those with no stool sample
+``` {r}
+stool <- stool[stool$SampleID%in%
+                   rownames(genus_taxonomy),]
+```
+
+
+# Sample Characteristics
+
+``` {r}
+#Age
+stool %>% group_by(Adversity) %>% summarise_at(vars(Age),list(mean=mean, sd=sd))
+psych::describe(stool$Age)
+
+#Sex
+table(stool$Sex,stool$Adversity_rlvl)
+
+#Ethnicity
+table(stool$race,stool$Adversity_rlvl,useNA="ifany")
+
+
+#Education (primary caregiver)
+table(stool$P1_ED_LEVEL,stool$Adversity_rlvl,
+      useNA="ifany")
+
+
+#PUFA
+stool[!is.na(stool$fatpoly_per_cal),] %>% group_by(Adversity) %>% summarise_at(vars(fatpoly_per_cal),list(mean=mean, sd=sd))
+mean(stool$fatpoly_per_cal,na.rm=T)
+sd(stool$fatpoly_per_cal,na.rm=T)
+
+#Sugar
+stool[!is.na(stool$sugar_per_cal),] %>% group_by(Adversity) %>% summarise_at(vars(sugar_per_cal),list(mean=mean, sd=sd))
+mean(stool$sugar_per_cal,na.rm=T)
+sd(stool$sugar_per_cal,na.rm=T)
+
+#Fiber
+stool[!is.na(stool$fiber_per_cal),] %>% group_by(Adversity) %>% summarise_at(vars(fiber_per_cal),list(mean=mean, sd=sd))
+mean(stool$fiber_per_cal,na.rm=T)
+sd(stool$fiber_per_cal,na.rm=T)
+
+#Days between stool sample and food diary
+stool[!is.na(stool$daysbetween_diet_stool),] %>% group_by(Adversity) %>%
+  summarise_at(vars(daysbetween_diet_stool),list(mean=mean,sd=sd))
+mean(stool$daysbetween_diet_stool,na.rm=T)
+sd(stool$daysbetween_diet_stool,na.rm=T)
+```
+#### Group differences tests
+``` {r}
+#Age
+t.test(stool$Age ~ stool$Adversity)
+
+#Sex
+chisq.test(stool$Sex,stool$Adversity)
+
+#Race/Ethnicity
+chisq.test(stool$race,stool$Adversity)
+
+#Parent Education
+chisq.test(stool$P1_ED_LEVEL,stool$Adversity)
+
+#PUFA
+t.test(stool$fatpoly_per_cal~stool$Adversity)
+
+#Sugar
+t.test(stool$sugar_per_cal~stool$Adversity)
+
+#Fiber
+t.test(stool$fiber_per_cal~stool$Adversity)
+
+#Days between sample and food diary
+t.test(daysbetween_diet_stool~Adversity,data=stool[!is.na(stool$daysbetween_diet_stool),])
+```
+
+# Internalizing \~ Adversity
+
+Because this is fairly well-characterized by prior literature, no model
+building approach for this analysis.
+
+```{r}
+#assumptions
+internalizing_model <- lm(cbcl_internalizing ~ Adversity + Age + Sex, data=stool)
+internalizing_resids <- resid(internalizing_model)
+internalizing_fitted <- fitted(internalizing_model)
+##normality of residuals
+hist(internalizing_resids)
+##heteroskedasticity + linearity
+plot(internalizing_resids ~ internalizing_fitted)
+```
+
+Residuals appear skewed, so we try a transformation of the y variable.
+Square root should be an ok transformation to begin with, given that the
+data have many 0s and are not heavily skewed.
+
+```{r}
+#assumptions
+internalizing_model <- lm(sqrt(cbcl_internalizing) ~ Adversity + Age + Sex , data=stool)
+internalizing_resids <- resid(internalizing_model)
+internalizing_fitted <- fitted(internalizing_model)
+##normality of residuals
+hist(internalizing_resids)
+qqnorm(internalizing_resids)
+##heteroskedasticity + linearity
+plot(internalizing_resids ~ internalizing_fitted)
+
+get_regression_table(internalizing_model) %>% kable()
+```
+
+Post-hoc decision to winsorize outliers
+
+``` {r}
+stool$sqrtinternalizing <- sqrt(stool$cbcl_internalizing)
+stool$sqrtinternalizing_IQRwin <- ifelse(stool$sqrtinternalizing>
+                                     quantile(stool$sqrtinternalizing[stool$Adversity=='Comparison'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Comparison'],na.rm=T)&stool$Adversity=='Comparison',quantile(stool$sqrtinternalizing[stool$Adversity=='Comparison'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Comparison'],na.rm=T),
+                                   ifelse(stool$sqrtinternalizing>
+                                     quantile(stool$sqrtinternalizing[stool$Adversity=='Adversity'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Adversity'],na.rm=T)&stool$Adversity=='Adversity',quantile(stool$sqrtinternalizing[stool$Adversity=='Adversity'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Adversity'],na.rm=T),stool$sqrtinternalizing))
+```
+
+``` {r}
+internalizing_model3 <- lm(sqrtinternalizing_IQRwin ~ Adversity + Age + Sex,
+                              data=stool)
+get_regression_table(internalizing_model3) %>% kable()
+```
+
+
+
+#### Internalizing ~ Diet
+
+``` {r}
+#center vars
+stool <- stool %>% mutate(
+  pufa_cntr = fatpoly_per_cal-mean(fatpoly_per_cal,na.rm=T),
+  sugar_cntr = sugar_per_cal-mean(sugar_per_cal,na.rm=T),
+  fiber_cntr = fiber_per_cal-mean(fiber_per_cal,na.rm=T)
+)
+
+```
+
+#### Internalizing ~ Diet - Winsorized
+
+``` {r}
+
+#pufa
+internalizing_pufa_model <- lm(sqrtinternalizing_IQRwin~pufa_cntr*Adversity+Age,data=stool)
+summ(internalizing_pufa_model,part.corr=T,digits=3)
+
+#sugar
+internalizing_sugar_model <- lm(sqrtinternalizing_IQRwin~sugar_cntr*Adversity+Age,data=stool)
+summ(internalizing_sugar_model,part.corr=T,digits=3)
+
+#fiber
+internalizing_fiber_model <- lm(sqrtinternalizing_IQRwin~fiber_cntr*Adversity+Age,data=stool)
+summ(internalizing_fiber_model,part.corr=T,digits=3)
+
+#fiber - probed
+summ(lm(sqrtinternalizing_IQRwin~fiber_cntr*Adversity_rlvl+Age,data=stool),
+     part.corr=T,digits=3)
+
+#fiber - probed JN
+johnson_neyman(lm(sqrtinternalizing_IQRwin~fiber_per_cal*Adversity+Age,
+                                data=stool),
+                             pred=AdversityAdversity,modx=fiber_per_cal,digits=3)
+```
+
+#### Figures
+``` {r}
+adversity_colors=c('Comparison'="#08519C",'Adversity'="#FC8D62",
+                   'Low Fiber'= "#ADDD8E",'High Fiber'="#238443",
+                   '1-6 Years' = "#F768A1",'6.01-12 Years'="#AE017E",'12.01-18 Years' = "#49006A",
+                   '1'="#984EA3",'2'="#A65628",'3'="#377EB8")
+adversity_labs <- c('Comparison','Interpersonal\nAdversity')
+names(adversity_labs) <- c('Comparison','Adversity')
+
+```
+
+
+#### Figures - Winsorized
+``` {r}
+stool$internalizingOL <- ifelse(stool$sqrtinternalizing>
+                                     quantile(stool$sqrtinternalizing[stool$Adversity=='Comparison'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Comparison'],na.rm=T)&stool$Adversity=='Comparison',1,
+                                   ifelse(stool$sqrtinternalizing>
+                                     quantile(stool$sqrtinternalizing[stool$Adversity=='Adversity'],.75,na.rm=T)+1.5*IQR(stool$sqrtinternalizing[stool$Adversity=='Adversity'],na.rm=T)&stool$Adversity=='Adversity',1,0)) %>% as.factor()
+```
+
+``` {r}
+stool$Winsorized <- ifelse(stool$internalizingOL==0,'Not Winsorized','Winsorized')
+ggplot(stool[!is.na(stool$sqrtinternalizing),],
+       aes(x=fiber_per_cal,y=sqrtinternalizing_IQRwin,color=Adversity)) +
+  geom_smooth(method="lm",size=1)+ scale_color_manual(values=adversity_colors,
+                         labels=c("Comparison","Interpersonal Adversity")) +
+ geom_point(size=1.5,aes(shape=Winsorized)) +
+  theme_bw() + theme(text=element_text(size=12), axis.title.y=element_text(size=12, vjust=-.5),axis.title.x=element_text(size=12),legend.text = element_text(size=12),legend.title=element_blank(),
+                     legend.position='bottom',legend.box='vertical')+
+facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity))+
+    labs(y="Internalizing Symptoms\n(Square Root)",
+         x="Fiber (g/kcal)") #+
+   #geom_text(data=labeldata,
+   #        mapping = aes(x = .03, y = 4.5, label = label),size=3.5,
+    #       color='black',hjust=1)
+ggsave('figures/internalizing_fiber_winsorized.svg',width=4,height=4)
+ggsave('figures/internalizing_fiber_winsorized.eps',width=4,height=4)
+
+```
+
+# Microbiome \~ Adversity
+
+### Alpha Diversity - US
+
+#### Model Comparison
+
+\*\* Note on model comparison:\*\* For each alpha diversity metric
+within each subsample, adjusted R squared values were compared. Due to
+possible heterogeneity of the adversity effect, informed by theory (ie,
+accelerated development theory, pubertal recalibration theory, etc), and
+due to possible nonlinearity discerned in visual inspection of data,
+interaction effects and a quadratic term for age were also tested. The
+model with highest adjusted R squared was then tested with the addition
+of sex. Then, the model that fit best among all 4 metrics was selected.
+
+```{r}
+# test models without sex
+
+# model1
+model1_faith_pd <- lm(faith_pd ~ Adversity + Age, data=stool)
+model1_observed_features <- lm(observed_features ~ Adversity + Age, data=stool)
+model1_pielou_evenness <- lm(pielou_evenness ~ Adversity + Age, data=stool)
+model1_shannon_entropy <- lm(shannon_entropy ~ Adversity + Age, data=stool)
+summary(c(summary(model1_faith_pd)$adj.r.squared,
+summary(model1_observed_features)$adj.r.squared,
+summary(model1_pielou_evenness)$adj.r.squared,
+summary(model1_shannon_entropy)$adj.r.squared))
+
+
+# model2
+model2_faith_pd <- lm(faith_pd ~ Adversity + Age + Age2, data=stool)
+model2_observed_features <- lm(observed_features ~ Adversity + Age + Age2, data=stool)
+model2_pielou_evenness <- lm(pielou_evenness ~ Adversity + Age + Age2, data=stool)
+model2_shannon_entropy <- lm(shannon_entropy ~ Adversity + Age + Age2, data=stool)
+summary(c(summary(model2_faith_pd)$adj.r.squared,
+summary(model2_observed_features)$adj.r.squared,
+summary(model2_pielou_evenness)$adj.r.squared,
+summary(model2_shannon_entropy)$adj.r.squared))
+
+# model3
+model3_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age, data=stool)
+model3_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age, data=stool)
+model3_pielou_evenness <- lm(pielou_evenness ~ Adversity + Age + Adversity*Age, data=stool)
+model3_shannon_entropy <- lm(shannon_entropy ~ Adversity + Age + Adversity*Age, data=stool)
+summary(c(summary(model3_faith_pd)$adj.r.squared,
+summary(model3_observed_features)$adj.r.squared,
+summary(model3_pielou_evenness)$adj.r.squared,
+summary(model3_shannon_entropy)$adj.r.squared))
+
+# model4
+model4_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2, data=stool)
+model4_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2, data=stool)
+model4_pielou_evenness <- lm(pielou_evenness ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2, data=stool)
+model4_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2, data=stool)
+summary(c(summary(model4_faith_pd)$adj.r.squared,
+summary(model4_observed_features)$adj.r.squared,
+summary(model4_pielou_evenness)$adj.r.squared,
+summary(model4_shannon_entropy)$adj.r.squared))
+```
+
+```{r}
+# model5
+model5_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + Sex, data=stool)
+model5_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + Sex, data=stool)
+model5_pielou_evenness <- lm(pielou_evenness ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + Sex, data=stool)
+model5_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + Sex, data=stool)
+summary(c(summary(model5_faith_pd)$adj.r.squared,
+summary(model5_observed_features)$adj.r.squared,
+summary(model5_pielou_evenness)$adj.r.squared,
+summary(model5_shannon_entropy)$adj.r.squared))
+```
+
+Looks like model 4 is the best model by this metric.
+
+#### Faith's Phylogenetic Diversity
+
+```{r}
+#assumptions
+##normality of residuals
+hist(resid(model4_faith_pd))
+##heteroskedasticity + linearity
+plot(resid(model4_faith_pd) ~ fitted(model4_faith_pd))
+
+#standard summary
+get_regression_table(model4_faith_pd) %>% kableExtra::kable()
+```
+
+##### Probing
+
+```{r}
+summary(lm(faith_pd ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool))
+
+```
+
+##### Effect Size
+
+```{r}
+summ(model4_faith_pd, part.corr=TRUE, digits=3)
+summ(lm(faith_pd ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool),part.corr = TRUE,digits=3)
+```
+
+#### Observed Features
+
+```{r}
+#assumptions
+##normality of residuals
+hist(resid(model4_observed_features))
+##heteroskedasticity + linearity
+plot(resid(model4_observed_features) ~ fitted(model4_observed_features))
+
+#standard summary
+get_regression_table(model4_observed_features) %>% kableExtra::kable()
+```
+
+##### Probing
+
+```{r}
+summary(lm(observed_features ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool))
+```
+
+##### Effect Size
+
+```{r}
+summ(model4_observed_features, part.corr=TRUE, digits=3)
+summ(lm(observed_features ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool),part.corr = T, digits=3)
+```
+
+#### Pielou Evenness
+
+```{r}
+#assumptions
+##normality of residuals
+hist(resid(model4_pielou_evenness))
+##heteroskedasticity + linearity
+plot(resid(model4_pielou_evenness) ~ fitted(model4_pielou_evenness))
+
+#standard summary
+get_regression_table(model4_pielou_evenness) %>% kableExtra::kable()
+```
+##### Effect Size
+``` {r}
+summ(model4_pielou_evenness,digits=3,part.cor=T)
+```
+
+#### Shannon Entropy
+
+```{r}
+#assumptions
+##normality of residuals
+hist(resid(model4_shannon_entropy))
+##heteroskedasticity + linearity
+plot(resid(model4_shannon_entropy) ~ fitted(model4_shannon_entropy))
+
+#standard summary
+get_regression_table(model4_shannon_entropy) %>% kableExtra::kable()
+```
+
+##### Probing
+
+```{r}
+summary(lm(shannon_entropy ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool))
+```
+
+##### Effect Size
+
+```{r}
+summ(model4_shannon_entropy,part.corr = TRUE, digits=3)
+summ(lm(shannon_entropy ~ Adversity_rlvl*Age + Adversity_rlvl*Age2, data=stool), part.corr = T, digits=3)
+```
+
+#### Conclusion
+
+Inverted U-shaped association between richness and age is significant in
+the adversity group but flattened (nonsignificantly positive) in the
+comparison group.
+
+#### Figures
+``` {r}
+
+
+a <- ggplot(stool,
+         aes(faith_pd,x=Age,color=Adversity)) +
+    geom_smooth(method = "lm", formula = 'y ~ x + I(x^2)', alpha=0) +
+    geom_point(size=1.5) + scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) +
+    #facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) + 
+  theme_bw() + theme(text=element_text(size=16),axis.title.y=element_text(vjust=-.4),legend.title=element_blank(),legend.text=element_text(size=16)) +
+    labs(y="Faith's Phylogenetic Diversity",
+         x="Age")
+
+# ggsave(paste('figures/us','faith_pd','adversity_age.svg',sep="_"),width=10,height=7)
+
+b <- ggplot(stool,
+         aes(observed_features,x=Age,color=Adversity)) +
+    geom_smooth(method = "lm", formula = 'y ~ x + I(x^2)', alpha=0) +
+    geom_point(size=1.5) + scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) +
+    #facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) + 
+  theme_bw() + theme(text=element_text(size=16),axis.title.y=element_text(vjust=-.4),legend.title=element_blank(),legend.text=element_text(size=16)) +
+    labs(y="Observed Feature Counts",
+         x="Age")
+
+c <- ggplot(stool,
+         aes(shannon_entropy,x=Age,color=Adversity)) +
+    geom_smooth(method = "lm", formula = 'y ~ x + I(x^2)', alpha=0) +
+    geom_point(size=1.5) + scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) +
+    #facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) + 
+  theme_bw() + theme(text=element_text(size=16),axis.title.y=element_text(vjust=-.4),legend.title=element_blank(),legend.text=element_text(size=16)) +
+    labs(y="Shannon's Diversity",
+         x="Age")
+
+panel <- ggarrange(a, b, c,
+          labels = c('A','B','C'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=3,nrow=1,
+          font.label=list(size=12))
+panel
+ggsave('figures/alpha_panel.eps',width=12,height=4.5)
+ggsave('figures/alpha_panel.svg',width=12,height=4.5)
+```
+
+
+### Beta Diversity
+
+```{r}
+set.seed(5581)
+options(digits=6)
+adonis2(bray_curtis ~ Adversity*Age + Adversity*Age2, data=stool_bc, by="term")
+adonis2(jaccard ~ Adversity*Age + Adversity*Age2, data=stool_bc, by="term")
+adonis2(unweighted_uf ~ Adversity*Age + Adversity*Age2, data=stool_bc, by="term")
+adonis2(weighted_uf ~ Adversity*Age + Adversity*Age2, data=stool_bc, by="term")
+```
+
+
+#### FU: Probing
+Data Wrangling
+``` {r}
+## Bray-Curtis ##
+bray_curtis_adversity <- bray_curtis[rownames(bray_curtis)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity'],
+                                     colnames(bray_curtis)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity']]
+rownames(bray_curtis_adversity) <- colnames(bray_curtis_adversity)
+
+bray_curtis_comparison <- bray_curtis[rownames(bray_curtis)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison'],
+                                     colnames(bray_curtis)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison']]
+rownames(bray_curtis_comparison) <- colnames(bray_curtis_comparison)
+
+## Jaccard ##
+jaccard_adversity <- jaccard[rownames(jaccard)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity'],
+                                     colnames(jaccard)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity']]
+rownames(jaccard_adversity) <- colnames(jaccard_adversity)
+
+jaccard_comparison <- jaccard[rownames(jaccard)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison'],
+                                     colnames(jaccard)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison']]
+rownames(jaccard_comparison) <- colnames(jaccard_comparison)
+
+## Unweighted UniFrac ##
+unweighted_uf_adversity <- unweighted_uf[rownames(unweighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity'],
+                                     colnames(unweighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity']]
+rownames(unweighted_uf_adversity) <- colnames(unweighted_uf_adversity)
+
+unweighted_uf_comparison <- unweighted_uf[rownames(unweighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison'],
+                                     colnames(unweighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison']]
+rownames(unweighted_uf_comparison) <- colnames(unweighted_uf_comparison)
+
+## Weighted UniFrac ##
+weighted_uf_adversity <- weighted_uf[rownames(weighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity'],
+                                     colnames(weighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Adversity']]
+rownames(weighted_uf_adversity) <- colnames(weighted_uf_adversity)
+
+weighted_uf_comparison <- weighted_uf[rownames(weighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison'],
+                                     colnames(weighted_uf)%in%
+                                       stool$SampleID[stool$Adversity=='Comparison']]
+rownames(weighted_uf_comparison) <- colnames(weighted_uf_comparison)
+
+```
+
+Probe
+``` {r}
+set.seed(5581)
+
+## Bray Curtis ##
+adonis2(bray_curtis_comparison ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Comparison',])
+adonis2(bray_curtis_adversity ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Adversity',])
+
+## Jaccard ##
+adonis2(jaccard_comparison ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Comparison',])
+adonis2(jaccard_adversity ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Adversity',])
+
+## Unweighted UniFrac ##
+adonis2(unweighted_uf_comparison ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Comparison',])
+adonis2(unweighted_uf_adversity ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Adversity',])
+
+## Weighted UniFrac ##
+adonis2(weighted_uf_comparison ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Comparison',])
+adonis2(weighted_uf_adversity ~ Age + Age2, data=stool_bc[stool_bc$Adversity=='Adversity',])
+
+```
+
+
+#### Conclusion
+
+Effect of adversity by age squared interaction in all metrics.
+
+#### Figures
+``` {r}
+#Bray-Curtis
+a <- ggplot(bc_pcoa, aes(x=X0.082051837,y=X0.064021226)) +
+  scale_color_manual(values=adversity_colors,name='Age') + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+  stat_ellipse(size=1,aes(color=age_dummy)) +
+  geom_point(aes(color=age_dummy),size=1.5) +
+  theme_bw() + labs(y="PC1 (8.21%)",x="PC2 (6.40%)", title="Bray-Curtis") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),strip.text=element_text(size=16),legend.text=element_text(size=16),
+        legend.title=element_text(size=16))
+#ggsave('figures/talks/bc_pcoa.svg',width=10,height=6)
+
+#Jaccard
+b <- ggplot(jaccard_pcoa, aes(x=X0.064667903,y=X0.049896407)) +
+  scale_color_manual(values=adversity_colors,name='Age') +
+  stat_ellipse(size=1,aes(color=age_dummy)) +
+  geom_point(aes(color=age_dummy),size=1.5) + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+  theme_bw() + labs(y="PC1 (6.47%)",x="PC2 (4.99%)", title="Jaccard") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),strip.text=element_text(size=16),legend.text=element_text(size=16),
+        legend.title=element_text(size=16))
+
+#Unweighted Unifrac
+c <- ggplot(uwuf_pcoa, aes(x=X0.142085758,y=X0.089972)) +
+  scale_color_manual(values=adversity_colors,name='Age') + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+  stat_ellipse(size=1,aes(color=age_dummy)) +
+  geom_point(aes(color=age_dummy),size=1.5) +
+  theme_bw() + labs(y="PC1 (14.21%)",x="PC2 (9.00%)", title="Unweighted UniFrac") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),strip.text=element_text(size=16),legend.text=element_text(size=16),
+        legend.title=element_text(size=16))
+
+#Weighted Unifrac
+d <- ggplot(wuf_pcoa, aes(x=X0.264358401,y=X0.218601819)) +
+  scale_color_manual(values=adversity_colors,name='Age') + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+  stat_ellipse(size=1,aes(color=age_dummy)) +
+  geom_point(aes(color=age_dummy),size=1.5) +
+  theme_bw() + labs(y="PC1 (26.44%)",x="PC2 (21.86%)", title="Weighted UniFrac") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),strip.text=element_text(size=16),legend.text=element_text(size=16),
+        legend.title=element_text(size=16))
+
+panel <- ggarrange(a, b, c,d,
+          labels = c('A','B','C','D'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=2,nrow=2,
+          font.label=list(size=12))
+panel
+ggsave('figures/pcoa_panel.eps',width=12,height=10)
+ggsave('figures/pcoa_panel.svg',width=12,height=10)
+```
+
+### Differential Abundance - US
+#### Genus
+
+```{r}
+ genus_abundance <- Maaslin2(
+   input_data = genus_taxonomy,
+   input_metadata = stool_maaslin,
+   normalization = "CLR",
+   transform = "None",
+   min_abundance = 1,
+   min_prevalence = 0.2,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2"))
+
+```
+
+#### Picrust
+```{r}
+ picrust_scfa_aaa_abundance <- Maaslin2(
+   input_data = picrust_hypothesized,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = -100,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/picrust_scfa_aaa_abundance",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2"))
+
+
+
+```
+
+#### Figures
+
+**Data Wrangling**
+
+```{r}
+## input data that have undergone filtering, transform & normalization per Maaslin options ##
+
+# genus
+# load adversity-associated data
+genus_results2 <- read_tsv("maaslin_.05/genus_abundance/all_results.tsv")
+genus_results <- read_tsv("maaslin_.05/genus_abundance/significant_results.tsv") %>%
+  .[which(.$metadata=='Adversity'|.$metadata=='adversity_age'|.$metadata=='adversity_age2'),]
+# load taxonomy file
+genus_CLR <- read_tsv("maaslin_.05/genus_abundance/features/filtered_data_norm_transformed.tsv")
+# select adversity- or cortisol-associated taxa
+genus_select <- genus_CLR[,c(1,which(colnames(genus_CLR)%in%
+                              genus_results$feature))] %>%
+  column_to_rownames('feature')
+
+# picrust
+# load adversity-associated data
+picrust_results2 <- read_tsv("maaslin_.05/picrust_scfa_aaa_abundance/all_results.tsv")
+picrust_results <- read_tsv("maaslin_.05/picrust_scfa_aaa_abundance/significant_results.tsv") %>%
+  .[which(.$metadata=='Adversity'|.$metadata=='adversity_age'|.$metadata=='adversity_age2'),]
+
+# load taxonomy file
+picrust_CLR <- as.data.frame(picrust_clr)
+picrust_CLR$feature <- rownames(picrust_CLR)
+colnames(picrust_CLR) <- gsub("-","\\.",colnames(picrust_CLR))
+# select adversity-associated taxa
+picrust_select <- picrust_CLR[,c(319,which(colnames(picrust_CLR)%in%
+                             picrust_results$feature))]
+picrust_select <- picrust_select[,-1]
+picrust_results$feature_long <- picrust_results$feature %>% dplyr::recode(
+  "CENTFERM.PWY" = "Pyruvate Fermentation to Butanoate",
+  "P461.PWY" = "Hexitol Fermentation to Lactate,\nFormate, Ethanol and Acetate",
+  "PWY.5022" = "4-Aminobutanoate Degradation V",
+  "ANAEROFRUCAT.PWY" = "Homolactic Fermentation",
+  "P161.PWY" = "Acetylene Degradation (Anaerobic)",
+  "P163.PWY" = "L-Lysine Fermentation to\nAcetate and Butanoate",
+  "PWY.5676" = "Acetyl-CoA Fermentation to\nButanoate",
+  "PWY.6628" = "L-Phenylalanine Biosynthesis",
+  "PWY.6630" = "L-Tyrosine Biosynthesis",
+  "FERMENTATION.PWY" = "Mixed Acid Fermentation",
+  "P108.PWY" = "Pyruvate Fermentation to\nPropanoate I",
+  "P122.PWY" = "Heterolactic Hermentation",
+  "P124.PWY" = "Bifidobacterium Shunt",
+  "PWY.5088" = "L-Glutamate Degradation VIII\n(to Propanoate)",
+  "PWY.5100" = "Pyruvate Fermentation to Acetate\n& Lactate II")
+```
+
+```{r}
+
+genus_figure <- merge(stool,genus_select,by.x='SampleID',by.y="row.names")
+picrust_figure <- merge(stool,picrust_select,by.x='SampleID',by.y="row.names")
+
+```
+
+```{r}
+#plots
+# 
+#wrangling
+ us_volcano_data <- read_tsv("maaslin_.05/genus_abundance/all_results.tsv")
+us_volcano_data <- us_volcano_data[us_volcano_data$metadata=='Adversity'|
+                                     us_volcano_data$metadata=='adversity_age'|
+                                     us_volcano_data$metadata=='adversity_age2',]
+us_volcano_data$metadata <- dplyr::recode(us_volcano_data$metadata,'Adversity'='Associated with Adversity Main Effect',
+         'adversity_age' = 'Associated with Adversity*Age',
+         'adversity_age2' = 'Associated with Adversity*Age^2')
+ us_volcano_data$feature_short <- ifelse(grepl('_uncultured',us_volcano_data$feature),
+                                               gsub(".*f_","",us_volcano_data$feature),
+                                         gsub(".*g_","",us_volcano_data$feature)) %>%
+   gsub("g_","",.) %>% gsub("_"," ",.) %>% gsub("[.]","",.)
+
+ us_volcano_data$feature_short[which(us_volcano_data$feature_short==' uncultured uncultured')] <-
+   " Rhodospirillales uncultured"
+ us_volcano_data$feature_short <- str_trim(us_volcano_data$feature_short)
+
+ us_volcano_data$change <- ifelse(us_volcano_data$qval<.05&
+                                                  us_volcano_data$coef>0,'Positive',
+                                                ifelse(us_volcano_data$qval<.05&
+                                                         us_volcano_data$coef<0,'Negative',
+                                                       'Not Significant'))
+ us_volcano_data$tlabel <- ifelse(us_volcano_data$change=='Not Significant',
+                                     NA, us_volcano_data$feature_short)
+
+
+ 
+ 
+ ## add line break to labels
+ adversity_labs <- c('Comparison','Interpersonal\nAdversity')
+ names(adversity_labs) <- c('Comparison','Adversity')
+ 
+# Individual Plots for Each Taxon
+us_volcano_data$feature_short2 <- gsub('group','grp',us_volcano_data$feature_short)
+
+ myplots <- lapply(c(1:ncol(genus_select)), function(f) {
+
+  #y axis label
+   ylab <- us_volcano_data$feature_short[which(us_volcano_data$feature==
+                                                     colnames(genus_select[f]))][1]
+
+  #formula depends on significance
+square <- ifelse(
+  sum(us_volcano_data$metadata[which(us_volcano_data$feature==
+                                   colnames(genus_select[f]))]==
+        'Associated with Adversity*Age^2'&
+        us_volcano_data$change[which(us_volcano_data$feature==
+                                   colnames(genus_select[f]))]!='Not Significant')>=1,
+  'y~x + I(x^2)',
+  'y~x')
+
+main_only <- sum(us_volcano_data$metadata[which(us_volcano_data$feature==
+                                   colnames(genus_select[f]))]==
+        'Associated with Adversity*Age'&
+        us_volcano_data$change[which(us_volcano_data$feature==
+                                   colnames(genus_select[f]))]!='Not Significant')==0
+
+
+
+## Plot Panel Code ##
+
+ifelse(main_only,
+
+    #plot only main effect
+    assign('plot_current',ggplot(genus_figure,
+         aes(y=genus_figure[,which(colnames(genus_figure)==
+                                     colnames(genus_select)[f])],x=Adversity,color=Adversity)) +
+        geom_violin() +
+           stat_summary(fun="mean",geom="crossbar",color="black",width=0.2, size=.25) +geom_point(size=1,position=position_jitter(width=.025)) +
+      scale_color_manual(values=adversity_colors,labels=c("Comparison","Interpersonal Adversity"))+ scale_x_discrete(labels=c("Comparison","Interpersonal\nAdversity")) +
+  theme_bw() + theme(text=element_text(size=14),axis.title.y=element_text(size=13, vjust=-.6),legend.text = element_text(size=16),legend.title=element_blank(),
+                     axis.title.x=element_blank()) +
+    labs(y=ylab)),
+
+
+    # plot interaction
+    assign('plot_current',ggplot(genus_figure,
+         aes(y=genus_figure[,which(colnames(genus_figure)==
+                                     colnames(genus_select)[f])],x=Age,color=Adversity)) + scale_color_manual(values=adversity_colors,labels=c("Comparison","Interpersonal Adversity")) +
+    geom_smooth(method = "lm", formula = square, color='black') +
+    geom_point(size=1) +
+    facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) + theme_bw() +
+      theme(text=element_text(size=14), axis.title.y=element_text(size=13, vjust=-.6),legend.text = element_text(size=16),legend.title=element_blank()) +
+    labs(y=ylab,
+         x="Age")))
+
+#ggsave(paste('figures/talks/',ylab,'adversity_age.svg',sep="_"),width=6,height=3)
+print(plot_current)
+})
+
+
+
+
+panel <- ggarrange(myplots[[4]],myplots[[5]],myplots[[6]],myplots[[3]],
+                   myplots[[1]],myplots[[2]],myplots[[7]],
+          labels = c('A','B','C','D',
+                      'E','F','G'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=2,nrow=4,
+          font.label=list(size=12))
+panel
+ggsave('figures/model4_abundance_panel_2col.svg',width=7,height=12)
+ggsave('figures/model4_abundance_panel.eps',width=12,height=7)
+
+```
+
+#### Picrust Figures
+``` {r}
+
+myplots <- lapply(c(1:ncol(picrust_select)), function(f) {
+ 
+  #y axis label
+  feat <- colnames(picrust_select)[f]
+   ylab <- picrust_results$feature_long[which(picrust_results$feature==feat)]
+
+  #formula depends on significance
+square <- ifelse(
+ sum(picrust_results$metadata[picrust_results$feature==feat]=='adversity_age2')>0,
+  'y~x + I(x^2)',
+  'y~x')
+
+main_only <- sum(picrust_results$metadata[picrust_results$feature==feat]!='Adversity')==0
+
+
+
+## Plot Panel ##
+ifelse(main_only,
+
+    #plot only main effect
+    assign('plot_current',ggplot(picrust_figure,
+         aes(y=picrust_figure[,which(colnames(picrust_figure)==
+                                     feat)],x=Adversity,color=Adversity)) +
+        geom_violin() +
+           stat_summary(fun="mean",geom="crossbar",color="black",width=0.2, size=.25) +geom_point(size=1,position=position_jitter(width=.025)) +
+      scale_color_manual(values=adversity_colors,labels=c("Comparison","Interpersonal Adversity")) + scale_x_discrete(labels=c("Comparison","Interpersonal Adversity"))+
+  theme_bw() + theme(text=element_text(size=14), axis.title.y=element_text(size=12, vjust=-.6),legend.text = element_text(size=16),legend.title=element_blank(),
+                     axis.title.x=element_blank()) +
+    labs(y=ylab,
+         x="Age")),
+
+
+    # plot interaction
+    assign('plot_current',ggplot(picrust_figure,
+         aes(y=picrust_figure[,which(colnames(picrust_figure)==
+                                     feat)],x=Age,color=Adversity)) + scale_color_manual(values=adversity_colors,labels=c("Comparison","Interpersonal Adversity")) +
+    geom_smooth(method = "lm", formula = square, color='black') +
+    geom_point(size=1) +
+    facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) + theme_bw() + 
+      theme(text=element_text(size=14), axis.title.y=element_text(size=12, vjust=-.6),legend.text = element_text(size=16),legend.title=element_blank()) +
+    labs(y=ylab,
+         #subtitle="US Subsample",
+         x="Age")))
+
+ggsave(paste('figures/talks/',feat,'adversity_age_version2.svg',sep="_"),width=6,height=3)
+print(plot_current)
+})
+
+
+ 
+
+panel <- ggarrange(myplots[[1]],myplots[[2]],
+          labels = c('A','B'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=2,nrow=1,
+          font.label=list(size=12))
+panel
+ggsave('figures/model4_abundance_picrust_panel_version2.eps',width=8,height=4)
+ggsave('figures/model4_abundance_picrust_panel_version2.svg',width=8,height=4)
+
+```
+
+#### Effect Sizes
+
+**data wrangling**
+
+```{r}
+# making new metadata that only includes subs with taxonomy data
+stool_DAeffect <- stool_maaslin[which(rownames(stool_maaslin) %in%
+                                              rownames(genus_select)),]
+```
+
+2 nested loops to get effect sizes
+
+```{r}
+levels <- c('genus','picrust')
+model4_maaslin_results <- NA
+colnames(model4_maaslin_results) <- c()
+for (l in levels) {
+  select_data <- get(paste(l,'select',sep="_")) # get selected df
+  for (i in c(1:ncol(select_data))) { #for each column (taxon) in df
+    taxon <- colnames(select_data)[i]
+    taxon_colnumber <- which(colnames(select_data)==taxon)
+    maaslin_model <- lm(select_data[,taxon_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2), data = stool_DAeffect)
+    taxon_model_results <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   taxon)[-1,]
+    model4_maaslin_results <- 
+      rbind(model4_maaslin_results,
+            taxon_model_results) #add new info to results
+    
+  }
+}
+model4_maaslin_results<- as.data.frame(model4_maaslin_results)
+model4_maaslin_results$metadata <- gsub("scale.","",rownames(model4_maaslin_results)) %>% #remove everything before first period
+  gsub("\\..*","",.) %>% #remove everything including and after period
+  gsub("AdversityAdversity","Adversity",.)
+model4_maaslin_results <- merge(model4_maaslin_results,genus_results2[,c("metadata","qval","feature")],by.y=c("metadata","feature"),by.x=c("metadata","taxon"),all.x=T) %>%
+  merge(.,picrust_results2[,c('metadata','qval',"feature")],by.y=c("metadata","feature"),by.x=c("metadata","taxon"),all.x=T)
+
+# round
+ model4_maaslin_results[,c(3:10)] <- sapply(model4_maaslin_results[,c(3:10)],as.numeric) %>%
+   round(.,digits=3)
+```
+
+# Microbiome \~ Internalizing
+
+Test whether the taxa that were found to be related to adversity are
+also related to internalizing.
+
+We will control for all terms of the model tested above.
+
+### Alpha Diversity
+
+```{r}
+model6_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + cbcl_internalizing, data=stool)
+model6_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + cbcl_internalizing, data=stool)
+model6_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 + cbcl_internalizing, data=stool)
+
+get_regression_table(model6_faith_pd) %>% kableExtra::kable()
+get_regression_table(model6_observed_features) %>% kableExtra::kable()
+get_regression_table(model6_shannon_entropy) %>% kableExtra::kable()
+```
+
+Conclusion: no evidence for richness \~ internalizing.
+
+### Beta Diversity
+
+```{r}
+# adjust data frames to exclude internalizing NAs
+options(digits=6)
+bray_curtis_internalizing <- bray_curtis[rownames(bray_curtis)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)],
+                                               colnames(bray_curtis)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)]]
+
+jaccard_internalizing <- jaccard[rownames(jaccard)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)],
+                                               colnames(jaccard)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)]]
+
+unweighted_uf_internalizing <- unweighted_uf[rownames(unweighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)],
+                                               colnames(unweighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)]]
+
+weighted_uf_internalizing <- weighted_uf[rownames(weighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)],
+                                               colnames(weighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$cbcl_internalizing)]]
+
+# run analyses
+set.seed(5581)
+adonis2(bray_curtis_internalizing ~ Adversity*Age + Adversity*Age2 + cbcl_internalizing,
+        data=stool_bc[!is.na(stool_bc$cbcl_internalizing),], by="margin")
+adonis2(jaccard_internalizing ~ Adversity*Age + Adversity*Age2 + cbcl_internalizing,
+        data=stool_bc[!is.na(stool_bc$cbcl_internalizing),], by="margin")
+adonis2(unweighted_uf_internalizing ~ Adversity*Age + Adversity*Age2 + cbcl_internalizing,
+        data=stool_bc[!is.na(stool_bc$cbcl_internalizing),], by="margin")
+adonis2(weighted_uf_internalizing ~ Adversity*Age + Adversity*Age2 + cbcl_internalizing,
+        data=stool_bc[!is.na(stool_bc$cbcl_internalizing),], by="margin")
+```
+
+Conclusion: no evidence for Beta \~ internalizing.
+
+### Abundance
+
+#### Genus
+
+```{r}
+ genus_abundance <- Maaslin2(
+   input_data = genus_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_internalizing",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                     "cbcl_internalizing"))
+
+```
+
+#### Picrust
+``` {r}
+ picrust_abundance_internalizing <- Maaslin2(
+   input_data = picrust_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = -1,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/picrust_abundance_internalizing",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                     "cbcl_internalizing"))
+
+```
+
+#### Figures
+
+*Data Wrangling*
+
+```{r}
+# genus
+genus_internalizing_results2 <- read_tsv("maaslin_.05/genus_abundance_internalizing/all_results.tsv")
+genus_internalizing_results <- read_tsv("maaslin_.05/genus_abundance_internalizing/significant_results.tsv")
+genus_internalizing_results <- genus_internalizing_results[genus_internalizing_results$metadata==
+                                                                 'cbcl_internalizing',]
+genus_internalizing_select <- genus_CLR[,c(1,which(colnames(genus_CLR)%in%
+                              genus_internalizing_results$feature))] %>%
+  column_to_rownames('feature')
+genus_internalizing_figure <- merge(stool,genus_internalizing_select,by.x='SampleID',by.y="row.names")
+
+
+```
+
+*Plots*
+
+```{r}
+# Individual Plots for Each Taxon
+  myplots <- lapply(c(1:ncol(genus_internalizing_select)), function(f) {
+  ylab <- us_volcano_data$feature_short[which(us_volcano_data$feature==
+                                                     colnames(genus_internalizing_select[f]))][1]
+
+
+assign(paste(f,'plot',sep='_'),
+    ggplot(genus_internalizing_figure,
+         aes(y=genus_internalizing_figure[,which(colnames(genus_internalizing_figure)==
+                                     colnames(genus_internalizing_select)[f])],x=cbcl_internalizing,color=Adversity)) + scale_color_manual(values=adversity_colors,labels=c("Comparison","Interpersonal Adversity")) +
+    geom_smooth(method = "lm", color='black') +
+    geom_point(size=2,position=position_jitter(width=.25)) +
+    theme_bw() +
+      theme(text=element_text(size=17),
+                     legend.text=element_text(size=16),
+                     legend.title=element_blank(),legend.position = 'bottom') +
+    labs(y=ylab,
+         #subtitle="US Subsample",
+         x="Internalizing Symptoms"))
+
+ggsave(paste('figures/',ylab,'internalizing.svg',sep="_"),width=6,height=6)
+ggsave(paste('figures/',ylab,'internalizing.eps',sep="_"),width=6,height=6)
+})
+
+```
+
+
+#### Effect Sizes
+``` {r}
+#levels <- c('genus','picrust') commented out in case needed later
+levels <- c('genus')
+internalizing_maaslin_results <- NA
+colnames(internalizing_maaslin_results) <- c()
+for (l in levels) {
+  select_data <- get(paste(l,'select',sep="_")) # get selected df
+  for (i in c(1:ncol(select_data))) { #for each column (taxon) in df
+    taxon <- colnames(select_data)[i]
+    taxon_colnumber <- which(colnames(select_data)==taxon)
+    maaslin_model <- lm(select_data[,taxon_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2) + scale(cbcl_internalizing), data = stool_DAeffect)
+    taxon_model_results2 <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   taxon)[-1,]
+    internalizing_maaslin_results <- 
+      rbind(internalizing_maaslin_results,
+            taxon_model_results2) #add new info to results
+    
+  }
+}
+
+internalizing_maaslin_results<- as.data.frame(internalizing_maaslin_results)
+internalizing_maaslin_results$metadata <- gsub("scale.","",rownames(internalizing_maaslin_results)) %>% #remove everything before first period
+  gsub("\\..*","",.) %>% #remove everything including and after period
+  gsub("AdversityAdversity","Adversity",.)
+internalizing_maaslin_results <- merge(internalizing_maaslin_results,genus_internalizing_results2[,c("metadata","qval","feature")],by.y=c("metadata","feature"),by.x=c("metadata","taxon"),all.x=T) #%>%
+  # merge(.,picrust_internalizing_results2[,c('metadata','qval',"feature")],by.y=c("metadata","feature"),by.x=c("metadata","taxon"),all.x=T)
+
+# round
+ internalizing_maaslin_results[,c(3:9)] <- sapply(internalizing_maaslin_results[,c(3:9)],as.numeric) %>%
+   round(.,digits=3)
+```
+
+## Robustness Analyses
+
+### Country of Origin
+
+#### Alpha
+
+```{r}
+get_regression_table(lm(faith_pd ~ international, 
+                        data=stool[stool$Adversity=='Adversity',])) %>% kableExtra::kable()
+get_regression_table(lm(observed_features ~ international, 
+                        data=stool[stool$Adversity=='Adversity',])) %>% kableExtra::kable()
+get_regression_table(lm(shannon_entropy ~ international, 
+                        data=stool[stool$Adversity=='Adversity',])) %>% kableExtra::kable()
+```
+
+
+```{r}
+levels <- c('genus')
+model6_maaslin_results <- NA
+for (l in levels) {
+  select_data <- get(paste(l,'internalizing_select',sep="_")) # get selected df
+  for (i in c(1:ncol(select_data))) { #for each column (taxon) in df
+    taxon <- colnames(select_data)[i]
+    taxon_colnumber <- which(colnames(select_data)==taxon)
+    maaslin_model <- lm(select_data[,taxon_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2) +
+                          scale(cbcl_internalizing), data = stool_DAeffect)
+    taxon_model_results <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   taxon)[-1,]
+    model6_maaslin_results <- 
+      rbind(model6_maaslin_results,
+            taxon_model_results) #add new info to results
+    
+  }
+}
+```
+
+#### Beta
+
+Data wrangling
+
+```{r}
+bray_curtis_ca <- bray_curtis[rownames(bray_curtis)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity'],
+                                    colnames(bray_curtis)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity']]
+rownames(bray_curtis_ca) <- colnames(bray_curtis_ca)
+
+jaccard_ca <- jaccard[rownames(jaccard)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity'],
+                                    colnames(jaccard)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity']]
+rownames(jaccard_ca) <- colnames(jaccard_ca)
+
+unweighted_uf_ca <- unweighted_uf[rownames(unweighted_uf)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity'],
+                                    colnames(unweighted_uf)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity']]
+rownames(unweighted_uf_ca) <- colnames(unweighted_uf_ca)
+
+weighted_uf_ca <- weighted_uf[rownames(weighted_uf)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity'],
+                                    colnames(weighted_uf)%in%
+                                               stool$SampleID[stool$Adversity=='Adversity']]
+rownames(weighted_uf_ca) <- colnames(weighted_uf_ca)
+
+stool_bc_ca <- stool_bc[stool_bc$Adversity=='Adversity',]
+```
+
+Tests:
+
+```{r}
+set.seed(5581)
+adonis2(bray_curtis_ca ~ international, data=stool_bc_ca, by="term")
+adonis2(jaccard_ca ~ international, data=stool_bc_ca, by="term")
+adonis2(unweighted_uf_ca ~ international, data=stool_bc_ca, by="term")
+adonis2(weighted_uf_ca ~ international, data=stool_bc_ca, by="term")
+```
+
+Dispersion:
+
+```{r}
+set.seed(5581)
+
+bc_disper_ca <- betadisper(as.dist(bray_curtis_ca), stool_bc_ca$international)
+permutest(bc_disper_ca, permutations=999)
+
+jaccard_disper_ca <- betadisper(as.dist(jaccard_ca), stool_bc_ca$international)
+permutest(bc_disper_ca, permutations=999)
+
+uwuf_disper_ca <- betadisper(as.dist(unweighted_uf_ca), stool_bc_ca$international)
+permutest(uwuf_disper_ca, permutations=999)
+
+wuf_disper_ca <- betadisper(as.dist(weighted_uf_ca), stool_bc_ca$international)
+permutest(wuf_disper_ca, permutations=999)
+```
+
+#### Genus
+
+```{r}
+ genus_abundance <- Maaslin2(
+   input_data = genus_select,
+   input_metadata = stool_maaslin[stool_maaslin$Adversity=='Adversity',],
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_international",
+   fixed_effects = c("international"))
+
+```
+
+
+# Diet
+
+
+#### Moderation Analyses
+
+
+##### Alpha Diversity
+
+*Polyunsaturated Fat*
+
+```{r}
+model7_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fatpoly_per_cal, data=stool)
+model7_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fatpoly_per_cal, data=stool)
+model7_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fatpoly_per_cal, data=stool)
+
+get_regression_table(model7_faith_pd)%>% kableExtra::kable()
+get_regression_table(model7_observed_features)%>% kableExtra::kable()
+get_regression_table(model7_shannon_entropy)%>% kableExtra::kable()
+```
+
+Conclusion: no evidence for fat moderation of adversity.
+
+*Sugar*
+
+```{r}
+model8_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*sugar_per_cal, data=stool)
+model8_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*sugar_per_cal, data=stool)
+model8_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*sugar_per_cal, data=stool)
+
+get_regression_table(model8_faith_pd)%>% kableExtra::kable()
+get_regression_table(model8_observed_features)%>% kableExtra::kable()
+get_regression_table(model8_shannon_entropy)%>% kableExtra::kable()
+```
+
+No evidence for sugar moderation of adversity effect on alpha diversity.
+
+*Fiber*
+``` {r}
+
+model9_faith_pd <- lm(faith_pd ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fiber_per_cal, data=stool)
+model9_observed_features <- lm(observed_features ~ Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fiber_per_cal, data=stool)
+model9_shannon_entropy <- lm(shannon_entropy ~  Adversity + Age + Adversity*Age + Age2 + Adversity*Age2 +
+                        Adversity*fiber_per_cal, data=stool)
+
+get_regression_table(model9_faith_pd) %>% kableExtra::kable()
+get_regression_table(model9_observed_features) %>% kableExtra::kable()
+get_regression_table(model9_shannon_entropy) %>% kableExtra::kable()
+```
+
+
+###### Probe
+
+``` {r}
+options(digits=6)
+# simple slope probing
+summ(lm(shannon_entropy ~  Adversity_rlvl + Age + Adversity_rlvl*Age + Age2 + Adversity_rlvl*Age2 +
+                        Adversity_rlvl*fiber_per_cal, data=stool),digits=3)
+
+# center age at the mean for jn probing
+stool$age_cntr <- stool$Age-mean(stool$Age)
+stool$age_cntr2 <- stool$age_cntr^2
+
+model <- lm(shannon_entropy ~  Adversity + age_cntr + Adversity*age_cntr + age_cntr2 + Adversity*age_cntr2 +
+                        Adversity*fiber_per_cal, data=stool)
+
+johnson_neyman(model,AdversityAdversity,fiber_per_cal)
+```
+
+###### Effect Size
+``` {r}
+summ(model9_shannon_entropy, part.corr=TRUE, digits=3)
+```
+
+###### Figures
+``` {r}
+#making slope labels
+labeldata <- data.frame(Adversity=as.factor(c('Comparison','Adversity')),label=c('b = -32.168\np = .046','b = 17.204\np = .332'))
+labeldata$Adversity<-relevel(labeldata$Adversity,ref='Comparison')
+
+#fiber dummy
+stool$fiber_dummy <- as.factor(ifelse(
+  stool$fiber_per_cal<mean(stool$fiber_per_cal,na.rm=T),'Low Fiber','High Fiber'))
+
+stool$fiber_dummy <- relevel(stool$fiber_dummy,
+                                ref='Low Fiber')
+
+#plot
+ggplot(stool[!is.na(stool$fiber_per_cal),],
+         aes(shannon_entropy,x=fiber_per_cal,color=Adversity)) +
+  scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) + geom_smooth(method="lm",aes(color=Adversity),size=1) +
+    geom_point(size=2,aes(color=Adversity)) +
+  theme_bw() + theme(text=element_text(size=17),
+                     legend.text=element_text(size=16),
+                     legend.title=element_blank(),legend.position = 'bottom')+
+    labs(y="Shannon's Diversity",
+         x="Fiber (g/kcal)") + ylim(4.1,7.1) + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+ geom_text(data=labeldata,
+           mapping = aes(x = .03, y = 6.8, label = label),size=4,
+           color='black',hjust=1)
+
+ggsave('figures/fiber_adversity_shannon.svg',width=6,height=4)
+ggsave('figures/fiber_adversity_shannon.eps',width=6,height=6)
+```
+
+
+##### Beta Diversity
+Data wrangling
+``` {r}
+bray_curtis_diet <- bray_curtis[rownames(bray_curtis)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)],
+                                               colnames(bray_curtis)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)]]
+
+jaccard_diet <- jaccard[rownames(jaccard)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)],
+                                               colnames(jaccard)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)]]
+
+unweighted_uf_diet <- unweighted_uf[rownames(unweighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)],
+                                               colnames(unweighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)]]
+
+weighted_uf_diet <- weighted_uf[rownames(weighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)],
+                                               colnames(weighted_uf)%in%
+                                                 stool$SampleID[!is.na(stool$fiber_per_cal)]]
+```
+
+```{r}
+options(digits=6)
+# run analyses
+# fat
+set.seed(5581)
+adonis2(bray_curtis_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fatpoly_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(jaccard_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fatpoly_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(unweighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fatpoly_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(weighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fatpoly_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+
+# sugar
+set.seed(5581)
+adonis2(bray_curtis_diet ~ Adversity*Age + Adversity*Age2 + Adversity*sugar_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(jaccard_diet ~ Adversity*Age + Adversity*Age2 + Adversity*sugar_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(unweighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*sugar_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(weighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*sugar_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+
+# fiber
+set.seed(5581)
+adonis2(bray_curtis_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fiber_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(jaccard_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fiber_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(unweighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fiber_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+adonis2(weighted_uf_diet ~ Adversity*Age + Adversity*Age2 + Adversity*fiber_per_cal,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal),])
+```
+
+Evidence for effect of fat\*Adversity on bray-curtis and Jaccard.
+
+###### Probe
+``` {r}
+set.seed(5581)
+
+#data wrangling
+row.names(bray_curtis_diet) <- colnames(bray_curtis_diet)
+row.names(jaccard_diet) <- colnames(jaccard_diet)
+row.names(unweighted_uf_diet) <- colnames(unweighted_uf_diet)
+bray_curtis_diet_lowfat <- bray_curtis_diet[rownames(bray_curtis_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(bray_curtis_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+bray_curtis_diet_hifat <- bray_curtis_diet[rownames(bray_curtis_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal>=median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(bray_curtis_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+
+
+jaccard_diet_lowfat <- jaccard_diet[rownames(jaccard_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(jaccard_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+jaccard_diet_hifat <- jaccard_diet[rownames(jaccard_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal>=median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(jaccard_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+
+unweighted_uf_diet_lowfat <- unweighted_uf_diet[rownames(unweighted_uf_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(unweighted_uf_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+unweighted_uf_diet_hifat <- unweighted_uf_diet[rownames(unweighted_uf_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal>=median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)],
+                                                  colnames(unweighted_uf_diet)%in%
+                                                    stool_bc$SampleID[
+                                                      stool_bc$fatpoly_per_cal<median(
+                                                        stool_bc$fatpoly_per_cal,na.rm=T)]]
+
+#below median - bc
+adonis2(bray_curtis_diet_lowfat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal<median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+#above median
+adonis2(bray_curtis_diet_hifat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal>=median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+
+#below median - jaccard
+adonis2(jaccard_diet_lowfat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal<median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+
+#above median
+adonis2(jaccard_diet_hifat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal>=median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+
+#below median - unweighted_uf
+adonis2(unweighted_uf_diet_lowfat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal<median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+
+#above median
+adonis2(unweighted_uf_diet_hifat ~ Adversity*Age + Adversity*Age2,
+        data=stool_bc[!is.na(stool_bc$fiber_per_cal)&
+                           stool_bc$fatpoly_per_cal>=median(stool_bc$fatpoly_per_cal,
+                                                          na.rm=T),])
+```
+
+
+###### Figures
+``` {r}
+bc_pcoa$pufa_dummy <- as.factor(ifelse(bc_pcoa$fatpoly_per_cal<median(
+  bc_pcoa$fatpoly_per_cal,na.rm=T),'Low PUFA','High PUFA'
+)) %>% relevel(., ref='Low PUFA')
+jaccard_pcoa$pufa_dummy <- as.factor(ifelse(jaccard_pcoa$fatpoly_per_cal<median(
+  jaccard_pcoa$fatpoly_per_cal,na.rm=T),'Low PUFA','High PUFA'
+)) %>% relevel(., ref='Low PUFA')
+uwuf_pcoa$pufa_dummy <- as.factor(ifelse(uwuf_pcoa$fatpoly_per_cal<median(
+  uwuf_pcoa$fatpoly_per_cal,na.rm=T),'Low PUFA','High PUFA'
+)) %>% relevel(., ref='Low PUFA')
+
+#Bray-Curtis
+a <- ggplot(bc_pcoa[!is.na(bc_pcoa$pufa_dummy),], aes(x=X0.082051837,y=X0.064021226)) +
+  scale_color_manual(values=adversity_colors,
+                     labels = c("Comparison","Interpersonal Adversity")) +
+  geom_point(size=1.5,aes(color=Adversity)) + facet_grid(cols=vars(pufa_dummy)) +
+  stat_ellipse(size=1,aes(color=Adversity)) +
+  theme_bw() + labs(y="PC1 (8.21%)",x="PC2 (6.40%)", title="Bray-Curtis") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),legend.title=element_blank())
+
+#Jaccard
+b <- ggplot(jaccard_pcoa[!is.na(jaccard_pcoa$pufa_dummy),], aes(x=X0.064667903,y=X0.049896407)) +
+  scale_color_manual(values=adversity_colors,
+                     labels = c("Comparison","Interpersonal Adversity")) +
+  geom_point(size=1.5,aes(color=Adversity)) + facet_grid(cols=vars(pufa_dummy)) +
+  stat_ellipse(size=1,aes(color=Adversity)) +
+  theme_bw() + labs(y="PC1 (6.47%)",x="PC2 (4.99%)", title="Jaccard") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),legend.title=element_blank())
+
+#Unweighted UniFrac
+c <- ggplot(uwuf_pcoa[!is.na(uwuf_pcoa$pufa_dummy),], aes(x=X0.142085758,y=X0.089972)) +
+  scale_color_manual(values=adversity_colors,
+                     labels = c("Comparison","Interpersonal Adversity")) +
+  geom_point(size=1.5,aes(color=Adversity)) + facet_grid(cols=vars(pufa_dummy)) +
+  stat_ellipse(size=1,aes(color=Adversity)) +
+  theme_bw() + labs(y="PC1 (14.21%%)",x="PC2 (9.00%)", title="Unweighted UniFrac") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),legend.title=element_blank())
+
+panel <- ggarrange(a, b, c,
+          labels = c('A','B', 'C'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=3,nrow=1,
+          font.label=list(size=12))
+panel
+ggsave('figures/pcoa_panel_pufa.eps',width=12,height=4)
+ggsave('figures/pcoa_panel_pufa.svg',width=12,height=4)
+```
+
+##### Diff
+Data wrangling
+``` {r}
+stool_maaslin$sugar_adversity <- stool_maaslin$sugar_per_cal*ifelse(
+  stool_maaslin$Adversity=='Adversity',1,0)
+stool_maaslin$fatpoly_adversity <- stool_maaslin$fatpoly_per_cal*ifelse(
+  stool_maaslin$Adversity=='Adversity',1,0)
+stool_maaslin$fiber_adversity <- stool_maaslin$fiber_per_cal*ifelse(
+  stool_maaslin$Adversity=='Adversity',1,0)
+```
+
+###### Genus - Fat
+
+```{r}
+ genus_abundance <- Maaslin2(
+   input_data = genus_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_fat",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                     "fatpoly_per_cal","fatpoly_adversity"))
+
+```
+
+
+
+###### Genus - Sugar
+
+```{r}
+ genus_abundance <- Maaslin2(
+   input_data = genus_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_sugar",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                     "sugar_per_cal", "sugar_adversity"))
+
+```
+
+
+
+###### Genus - Fiber
+
+
+```{r}
+
+ genus_abundance <- Maaslin2(
+   input_data = genus_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_fiber",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                     "fiber_per_cal", "fiber_adversity"))
+
+```
+###### Picrust - Fat
+```{r}
+ picrust_fat_abundance <- Maaslin2(
+   input_data = picrust_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/picrust_abundance_fat",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                    "fatpoly_per_cal", "fatpoly_adversity"))
+
+```
+
+###### Picrust - Sugar
+```{r}
+ picrust_sugar_abundance <- Maaslin2(
+   input_data = picrust_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/picrust_abundance_sugar",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                    "sugar_per_cal", "sugar_adversity"))
+
+```
+
+###### Picrust - Fiber
+```{r}
+ picrust_sugar_abundance <- Maaslin2(
+   input_data = picrust_select,
+   input_metadata = stool_maaslin,
+   normalization = "None",
+   transform = "None",
+   min_abundance = 0,
+   min_prevalence = 0,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/picrust_abundance_fiber",
+   fixed_effects = c("Age","Age2","Adversity", "adversity_age","adversity_age2",
+                    "fiber_per_cal", "fiber_adversity"))
+
+```
+
+
+###### Effect Sizes
+``` {r}
+#redo data frame to incorporate diet interaction effect columns
+stool_DAeffect <- stool_maaslin[which(rownames(stool_maaslin) %in%
+                                              rownames(genus_select)),]
+
+#load results
+genus_pufa_results <- read_tsv("maaslin_.05/genus_abundance_fat/all_results.tsv")
+genus_pufa_results$V8 <- 'pufa'
+genus_sugar_results <- read_tsv("maaslin_.05/genus_abundance_sugar/all_results.tsv")
+genus_sugar_results$V8 <- 'sugar'
+genus_fiber_results <- read_tsv("maaslin_.05/genus_abundance_fiber/all_results.tsv")
+genus_fiber_results$V8 <- 'fiber'
+picrust_pufa_results <- read_tsv("maaslin_.05/picrust_abundance_fat/all_results.tsv")
+picrust_pufa_results$V8 <- 'pufa'
+picrust_sugar_results <- read_tsv("maaslin_.05/picrust_abundance_sugar/all_results.tsv")
+picrust_sugar_results$V8 <- 'sugar'
+picrust_fiber_results <- read_tsv("maaslin_.05/picrust_abundance_fiber/all_results.tsv")
+picrust_fiber_results$V8 <- 'fiber'
+
+# effect size loop
+levels <- c('genus','picrust')
+model7_maaslin_results <- NA
+colnames(model7_maaslin_results) <- c()
+for (l in levels) {
+  select_data <- get(paste(l,'select',sep="_")) # get selected df
+  for (i in c(1:ncol(select_data))) { #for each column (feature) in df
+    feature <- colnames(select_data)[i]
+    feature_colnumber <- which(colnames(select_data)==feature)
+    
+    # pufa model
+    maaslin_model <- lm(select_data[,feature_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2) +
+                          scale(fatpoly_per_cal) + scale(fatpoly_adversity), data = stool_DAeffect)
+    feature_model_results <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   feature,'pufa')[-1,]
+    model7_maaslin_results <- 
+      rbind(model7_maaslin_results,
+            feature_model_results) #add new info to results
+    
+    # sugar model
+    maaslin_model <- lm(select_data[,feature_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2) +
+                          scale(sugar_per_cal) + scale(sugar_adversity), data = stool_DAeffect)
+    feature_model_results <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   feature,'sugar')[-1,]
+    model7_maaslin_results <- 
+      rbind(model7_maaslin_results,
+            feature_model_results) #add new info to results
+    
+    
+    # fiber model
+    maaslin_model <- lm(select_data[,feature_colnumber] ~ scale(Age) + scale(Age2) + Adversity +
+                          scale(adversity_age) + scale(adversity_age2) +
+                          scale(fiber_per_cal) + scale(fiber_adversity), data = stool_DAeffect)
+    feature_model_results <- cbind(summ(maaslin_model, part.corr = T, digits=3)$coeftable,
+                                   feature,'fiber')[-1,]
+    model7_maaslin_results <- 
+      rbind(model7_maaslin_results,
+            feature_model_results) #add new info to results
+    
+  }
+}
+
+#clean text in metadata column
+model7_maaslin_results<- as.data.frame(model7_maaslin_results)
+model7_maaslin_results$metadata <- gsub("scale.","",rownames(model7_maaslin_results)) %>% #remove everything before first period
+  gsub("\\..*","",.) %>% #remove everything including and after period
+  gsub("AdversityAdversity","Adversity",.)
+
+
+#merge datasets
+df_list <- list(model7_maaslin_results,
+                genus_pufa_results[,c('metadata','qval',"feature","V8")],
+                picrust_pufa_results[,c('metadata','qval',"feature","V8")],
+                genus_sugar_results[,c('metadata','qval',"feature","V8")],
+                picrust_sugar_results[,c('metadata','qval',"feature","V8")],
+                genus_fiber_results[,c('metadata','qval',"feature","V8")],
+                picrust_fiber_results[,c('metadata','qval',"feature","V8")])
+model7_maaslin_results_final <- df_list %>% reduce(full_join, join_by('metadata','feature','V8'))
+
+
+ write.csv(model7_maaslin_results_final,"temp_model7_results.csv")
+```
+
+
+###### Figures - Genera
+``` {r}
+
+
+plot7 <-
+ggplot(genus_figure,
+         aes(y=
+               genus_figure$d__Bacteria.p__Firmicutes.c__Clostridia.o__Lachnospirales.f__Lachnospiraceae.g__.Ruminococcus._gauvreauii_group,
+             x=fiber_per_cal,color=Adversity)) +
+  scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) +
+  geom_smooth(method="lm",color='black',alpha=0,size=1) +
+    geom_point(size=1.5,aes(color=Adversity)) +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  theme_bw() + theme(text=element_text(size=16),axis.title.y = element_text(vjust=-.4,size=14),legend.position = 'bottom',legend.title=element_blank()) +
+    labs(y="Ruminococcus Gauvreauii Grp",
+         x="Fiber (g/kcal)")
+
+plot10 <-
+ggplot(genus_figure,
+         aes(y=
+               genus_figure$d__Bacteria.p__Bacteroidota.c__Bacteroidia.o__Bacteroidales.f__Marinifilaceae.g__Butyricimonas,
+             x=fiber_per_cal,color=Adversity)) +
+  scale_color_manual(values=adversity_colors, labels=c('Comparison','Interpersonal Adversity')) +
+  geom_smooth(method="lm",aes(color=Adversity),alpha=0,size=1) +
+    geom_point(size=1.5,aes(color=Adversity)) +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  theme_bw() + theme(text=element_text(size=16),legend.position = 'bottom',legend.title=element_blank()) +
+    labs(y="Butyricimonas",
+         x="Fiber (g/kcal)")
+# #ggsave('figures/talks/butyricimonas_fiber.svg',width=6,height=4)
+# 
+# ## Panel ##
+
+panel <- ggarrange(plot7, plot10,
+          labels = c('A','B'),
+          common.legend=TRUE,
+          legend='bottom',
+          ncol=2,nrow=1,
+          font.label=list(size=12))
+panel
+ggsave('figures/models7-9_abundance_genus_panel.eps',width=8,height=4)
+ggsave('figures/models7-9_abundance_genus_panel.svg',width=8,height=4)
+```
+
+
+
+# PAM Clustering
+
+## Prepare data
+``` {r}
+genus_pam <- genus_CLR[,-1]
+rownames(genus_pam) <- genus_CLR$feature
+```
+## Run PAM
+``` {r}
+#Bray-Curtis
+clusters_bc <- pamk(bray_curtis,diss=T,seed=5581)
+clusters_bc$nc
+clusters_bc$pamobject$silinfo$avg.width
+
+#Jaccard
+clusters_jaccard <- pamk(jaccard,diss=T,seed=5581)
+clusters_jaccard$nc
+clusters_jaccard$pamobject$silinfo$avg.width
+
+#Unweighted UniFrac
+clusters_uwuf <- pamk(unweighted_uf,diss=T,seed=5581)
+clusters_uwuf$nc
+clusters_uwuf$pamobject$silinfo$avg.width
+
+#Weighted UniFrac
+clusters_wuf <- pamk(weighted_uf,diss=T,seed=5581)
+clusters_wuf$nc
+clusters_wuf$pamobject$silinfo$avg.width
+```
+
+Weighted UniFrac-based clusters selected as they are the most parsimonious,
+and had the highest average silhouette width. 
+
+## Merge Data
+``` {r}
+wuf_pam <- merge(wuf_pcoa,as.data.frame(clusters_wuf$pamobject$clustering),
+                 by.x="X",
+                 by.y='row.names')
+colnames(wuf_pam)[ncol(wuf_pam)] <- 'Enterotype'
+wuf_pam$Enterotype <- as.factor(wuf_pam$Enterotype)
+
+stool_pam <- merge(stool_maaslin,as.data.frame(clusters_wuf$pamobject$clustering),by='row.names')
+colnames(stool_pam)[ncol(stool_pam)] <- 'Enterotype'
+stool_pam$Enterotype <- as.factor(stool_pam$Enterotype)
+rownames(stool_pam) <- stool_pam$Row.names
+
+stool_pam_bc <- merge(stool_bc,as.data.frame(clusters_wuf$pamobject$clustering),
+                   by.y='row.names',by.x='SampleID')
+colnames(stool_pam)[ncol(stool_pam)] <- 'Enterotype'
+stool_pam$Enterotype <- as.factor(stool_pam$Enterotype)
+rownames(stool_pam) <- stool_pam$Row.names
+```
+
+## Enterotypes - Alpha
+``` {r}
+summary(lm(stool_pam$faith_pd~stool_pam$Enterotype))
+
+summary(lm(stool_pam$observed_features~stool_pam$Enterotype))
+
+summary(lm(stool_pam$pielou_evenness~stool_pam$Enterotype))
+
+summary(lm(stool_pam$shannon_entropy~stool_pam$Enterotype))
+```
+
+Enterotype 2 has higher richness but not evenness
+
+## Enterotype - Beta
+``` {r}
+options(digits=6)
+set.seed(5581)
+adonis2(unweighted_uf~Enterotype,data=stool_pam)
+```
+
+## Enterotypes - Genus
+``` {r}
+genus_abundance <- Maaslin2(
+   input_data = genus_taxonomy,
+   input_metadata = stool_pam,
+   normalization = "CLR",
+   transform = "None",
+   min_abundance = 1,
+   min_prevalence = 0.2,
+   correction = "BH", #default
+   max_significance = 0.05,
+   output = "maaslin_.05/genus_abundance_enterotype",
+   fixed_effects = c("Enterotype"))
+```
+
+## Enterotypes - Internalizing & Demographics
+``` {r}
+options(digits=6)
+#internalizing
+summary(lm(sqrt(stool_pam$cbcl_internalizing)~stool_pam$Enterotype))
+
+#age
+summary(lm(stool_pam$Age~stool_pam$Enterotype))
+
+#adversity
+chisq.test(stool_pam$Adversity,stool_pam$Enterotype)
+
+#diet
+summary(lm(sqrt(stool_pam$protein_per_cal)~stool_pam$Enterotype))
+summary(lm(sqrt(stool_pam$fiber_per_cal)~stool_pam$Enterotype))
+summary(lm(sqrt(stool_pam$sugar_per_cal)~stool_pam$Enterotype))
+summary(lm(sqrt(stool_pam$fatpoly_per_cal)~stool_pam$Enterotype))
+summary(lm(sqrt(stool_pam$fat_per_cal)~stool_pam$Enterotype))
+summary(lm(sqrt(stool_pam$carb_per_cal)~stool_pam$Enterotype))
+```
+
+## Figures
+``` {r}
+
+#Weighted Unifrac
+ggplot(wuf_pam, aes(x=X0.264358401,y=X0.218601819)) +
+  scale_color_manual(values=adversity_colors,name='Enterotype') + facet_grid(labeller=labeller(Adversity=adversity_labs),cols=vars(Adversity)) +
+  stat_ellipse(size=1,aes(color=Enterotype)) +
+  geom_point(aes(color=Enterotype),size=1.5) +
+  theme_bw() + labs(y="PC1 (26.44%)",x="PC2 (21.86%)", title="Weighted UniFrac") +
+  theme(text=element_text(size=16),plot.title=element_text(size=16),axis.text=element_blank(),strip.text=element_text(size=16),legend.text=element_text(size=16),
+        legend.title=element_text(size=16))
+
+ggsave('figures/pcoa_panel_enterotype.eps',width=12,height=10)
+ggsave('figures/pcoa_panel_enterotype.svg',width=12,height=10)
+```
+# Diet Variability
+Variability in diet between the 2 days
+``` {r}
+us_raw2 <- us_raw %>% mutate(
+  Day1_Cal = as.numeric(Day1_Cal),
+  Day2_Cal = as.numeric(Day2_Cal),
+  Day1_Fiber = as.numeric(Day1_Fiber),
+  Day2_Fiber = as.numeric(Day2_Fiber),
+  Day1_FatPoly = as.numeric(Day1_FatPoly),
+  Day2_FatPoly = as.numeric(Day2_FatPoly),
+  Day1_Sugar = as.numeric(Day1_Sugar),
+  Day2_Sugar = as.numeric(Day2_Sugar),
+  day1_fiberpercal = Day1_Fiber/Day1_Cal,
+  day2_fiberpercal = Day2_Fiber/Day2_Cal,
+  day1_pufapercal = Day1_FatPoly/Day1_Cal,
+  day2_pufapercal = Day2_FatPoly/Day2_Cal,
+  day1_sugarpercal = Day1_Sugar/Day1_Cal,
+  day2_sugarpercal = Day2_Sugar/Day2_Cal,
+)
+
+options(digits=6)
+t.test(us_raw2$Day1_Cal,us_raw2$Day2_Cal)
+t.test(us_raw2$Day1_Fiber,us_raw2$Day2_Fiber)
+t.test(us_raw2$Day1_FatPoly,us_raw2$Day2_FatPoly)
+t.test(us_raw2$Day1_Sugar,us_raw2$Day2_Sugar)
+```
